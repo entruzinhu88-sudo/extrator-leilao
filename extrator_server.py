@@ -42,34 +42,56 @@ HEADERS = {
     "DNT":                      "1",
 }
 
-def fetch_html(url, timeout=25):
-    """
-    Busca HTML simulando navegador Chrome real.
-    Usa sessão com cookies + Referer do Google.
-    """
-    session = requests.Session()
-
-    # Headers completos + Referer simulando vinda do Google
+def fetch_html_direct(url, timeout=25):
+    """Busca direta simulando Chrome real. Lança exceção se bloqueado."""
     hdrs = dict(HEADERS)
     hdrs['Referer'] = 'https://www.google.com.br/'
+    resp = requests.get(url, headers=hdrs, timeout=timeout,
+                        verify=False, allow_redirects=True)
+    resp.encoding = resp.apparent_encoding or 'utf-8'
+    if resp.status_code in (403, 429):
+        raise Exception(f'Bloqueado ({resp.status_code})')
+    if resp.status_code >= 400:
+        raise Exception(f'Erro HTTP {resp.status_code}')
+    return resp.text
 
-    for tentativa in range(2):
-        try:
-            resp = session.get(
-                url, headers=hdrs, timeout=timeout,
-                verify=False, allow_redirects=True
-            )
-            resp.encoding = resp.apparent_encoding or 'utf-8'
-            if resp.status_code == 403:
-                raise Exception(f'Site bloqueou o acesso (403 Forbidden)')
-            if resp.status_code >= 400:
-                raise Exception(f'Site retornou erro {resp.status_code}')
-            return resp.text
-        except Exception as e:
-            if tentativa == 1:
-                raise
-            time.sleep(2)
-    raise Exception('Falha ao buscar página')
+
+def fetch_html_proxy(url, timeout=20):
+    """
+    Fallback via proxy público (allorigins.win) para sites que bloqueiam
+    IPs de datacenter. Gratuito, sem autenticação.
+    """
+    import urllib.parse
+    proxy = (
+        f"https://api.allorigins.win/get"
+        f"?url={urllib.parse.quote(url, safe='')}"
+        f"&timestamp={int(time.time())}"
+    )
+    resp = requests.get(proxy, timeout=timeout)
+    resp.raise_for_status()
+    data = resp.json()
+    content = data.get('contents', '')
+    if not content or len(content) < 500:
+        raise Exception('Proxy retornou conteúdo insuficiente')
+    return content
+
+
+def fetch_html(url, timeout=25):
+    """
+    Tenta busca direta; se bloqueado (403/429) usa proxy público.
+    """
+    try:
+        return fetch_html_direct(url, timeout)
+    except Exception as e_direct:
+        if 'Bloqueado' in str(e_direct) or '403' in str(e_direct) or '429' in str(e_direct):
+            # Site bloqueou o IP do servidor — tenta via proxy
+            try:
+                return fetch_html_proxy(url, timeout=20)
+            except Exception as e_proxy:
+                raise Exception(
+                    f'Acesso direto bloqueado e proxy também falhou: {e_proxy}'
+                )
+        raise
 
 # ─────────────────────────────────────────────────────────────────────────────
 # UTILITÁRIOS
@@ -719,10 +741,7 @@ def extract():
     try:
         html = fetch_html(url)
     except Exception as e:
-        try:
-            html = fetch_with_playwright(url)
-        except Exception as e2:
-            return jsonify({'ok': False, 'error': f'Não foi possível acessar o site: {e}'}), 502
+        return jsonify({'ok': False, 'error': f'Não foi possível acessar o site: {e}'})
 
     soup = BeautifulSoup(html, 'html.parser')
 
