@@ -56,11 +56,8 @@ def fetch_html_direct(url, timeout=25):
     return resp.text
 
 
-def fetch_html_proxy(url, timeout=20):
-    """
-    Fallback via proxy público (allorigins.win) para sites que bloqueiam
-    IPs de datacenter. Gratuito, sem autenticação.
-    """
+def fetch_via_allorigins(url, timeout=18):
+    """Proxy: allorigins.win — retorna JSON com campo 'contents'."""
     import urllib.parse
     proxy = (
         f"https://api.allorigins.win/get"
@@ -69,29 +66,49 @@ def fetch_html_proxy(url, timeout=20):
     )
     resp = requests.get(proxy, timeout=timeout)
     resp.raise_for_status()
-    data = resp.json()
-    content = data.get('contents', '')
-    if not content or len(content) < 500:
-        raise Exception('Proxy retornou conteúdo insuficiente')
+    content = resp.json().get('contents', '')
+    if len(content) < 500:
+        raise Exception('allorigins: conteúdo insuficiente')
     return content
+
+
+def fetch_via_corsproxy(url, timeout=18):
+    """Proxy: corsproxy.io — retorna HTML diretamente."""
+    import urllib.parse
+    proxy = f"https://corsproxy.io/?{urllib.parse.quote(url, safe='')}"
+    resp = requests.get(proxy, headers={'X-Requested-With': 'XMLHttpRequest'},
+                        timeout=timeout)
+    resp.raise_for_status()
+    resp.encoding = resp.apparent_encoding or 'utf-8'
+    if len(resp.text) < 500:
+        raise Exception('corsproxy: conteúdo insuficiente')
+    return resp.text
 
 
 def fetch_html(url, timeout=25):
     """
-    Tenta busca direta; se bloqueado (403/429) usa proxy público.
+    Tenta busca direta com headers de navegador.
+    Se bloqueado (403/429), tenta dois proxies públicos gratuitos em sequência.
     """
     try:
         return fetch_html_direct(url, timeout)
     except Exception as e_direct:
-        if 'Bloqueado' in str(e_direct) or '403' in str(e_direct) or '429' in str(e_direct):
-            # Site bloqueou o IP do servidor — tenta via proxy
+        if not any(x in str(e_direct) for x in ('Bloqueado', '403', '429')):
+            raise  # erro diferente de bloqueio — propaga direto
+
+        # Site bloqueou o IP do servidor — tenta proxies em sequência
+        erros = [str(e_direct)]
+        for proxy_fn in (fetch_via_allorigins, fetch_via_corsproxy):
             try:
-                return fetch_html_proxy(url, timeout=20)
-            except Exception as e_proxy:
-                raise Exception(
-                    f'Acesso direto bloqueado e proxy também falhou: {e_proxy}'
-                )
-        raise
+                return proxy_fn(url)
+            except Exception as ep:
+                erros.append(str(ep))
+
+        raise Exception(
+            'Site bloqueia servidores externos. '
+            'Use o servidor local (INICIAR EXTRATOR.bat) para este leilão. '
+            f'Detalhes: {" | ".join(erros[-2:])}'
+        )
 
 # ─────────────────────────────────────────────────────────────────────────────
 # UTILITÁRIOS
