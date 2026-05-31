@@ -803,7 +803,7 @@ def parse():
 
 @app.route('/ping')
 def ping():
-    return jsonify({'ok': True, 'msg': 'Servidor ativo', 'version': '2.1'})
+    return jsonify({'ok': True, 'msg': 'Servidor ativo', 'version': '2.2'})
 
 @app.route('/debug')
 def debug():
