@@ -117,14 +117,19 @@ def fetch_html(url, timeout=25):
 def clean(s):
     return re.sub(r'\s+', ' ', (s or '')).strip()
 
-def fix_url(href, base='https:'):
+def fix_url(href, base='https:', origin=''):
+    """Converte href em URL absoluta.
+    origin = 'https://site.com.br' (sem barra final) para resolver relativos.
+    """
     if not href:
         return ''
     if href.startswith('//'):
         return base + href
     if href.startswith('/'):
-        return ''   # relativo sem domínio — descartamos
-    return href
+        return (origin + href) if origin else ''
+    if href.startswith('http'):
+        return href
+    return ''
 
 def parse_date_br(text):
     """Converte 'DD/MM/YYYY às HH:MM' → 'YYYY-MM-DDTHH:MM'"""
@@ -653,26 +658,56 @@ def extract_generic(soup, url):
              soup.find('meta', attrs={'name': prop})
         return clean(el['content']) if el and el.get('content') else ''
 
+    # Origin para resolver URLs relativas (ex: /edital.pdf)
+    m_origin = re.match(r'(https?://[^/]+)', url)
+    origin   = m_origin.group(1) if m_origin else ''
+    base_scheme = origin.split(':')[0] + ':' if origin else 'https:'
+
     text = soup.get_text(' ', strip=True)
 
+    # ── Título ──────────────────────────────────────────────────────────────
     h1    = soup.find('h1')
     titulo = clean(h1.get_text()) if h1 else (meta('og:title') or clean(soup.title.string or ''))
-    # remove texto de compartilhamento social do título
     if titulo.startswith(';)') or 'adorei' in titulo.lower():
         titulo = meta('og:description') or titulo
 
     desc  = meta('og:description') or ''
-    foto  = meta('og:image') or ''
 
+    # ── Foto ─────────────────────────────────────────────────────────────────
+    foto  = meta('og:image') or ''
+    if not foto:
+        # procura primeira imagem grande no DOM
+        for img in soup.find_all('img', src=True):
+            src = img['src']
+            # ignora ícones e logos típicos
+            if any(x in src.lower() for x in ['icon', 'logo', 'avatar', 'sprite', '1x1']):
+                continue
+            w = img.get('width', '')
+            h_attr = img.get('height', '')
+            try:
+                if int(w) > 100 or int(h_attr) > 100:
+                    foto = fix_url(src, base_scheme, origin); break
+            except (ValueError, TypeError):
+                if src.startswith('http'):
+                    foto = src; break
+
+    # ── Valores (avaliação e lance) ──────────────────────────────────────────
     def find_money(keywords):
         for kw in keywords:
-            m = re.search(rf'{kw}[^R]{{0,30}}R\$\s*([\d.,]+)', text, re.IGNORECASE)
+            m = re.search(rf'{kw}[^R]{{0,40}}R\$\s*([\d.,]+)', text, re.IGNORECASE)
             if m:
                 return 'R$ ' + m.group(1)
         return ''
 
-    avaliacao = find_money([r'avalia[çc][aã]o', r'valor\s+de\s+avalia', r'vr\.?\s+avalia'])
-    lance     = find_money([r'lance\s+m[íi]nimo', r'lance\s+inicial', r'valor\s+m[íi]nimo', r'valor\s+atual'])
+    avaliacao = find_money([
+        r'avalia[çc][aã]o', r'valor\s+de\s+avalia', r'vr\.?\s+avalia',
+        r'avaliado\s+em', r'pre[çc]o\s+de\s+avalia',
+    ])
+    lance = find_money([
+        r'lance\s+m[íi]nimo', r'lance\s+inicial', r'lance\s+atual',
+        r'valor\s+m[íi]nimo', r'valor\s+atual', r'pre[çc]o\s+m[íi]nimo',
+        r'oferta\s+m[íi]nima',
+    ])
 
     if not avaliacao or not lance:
         prices = re.findall(r'R\$\s*[\d.,]+', text)
@@ -681,48 +716,86 @@ def extract_generic(soup, url):
         if not lance and len(prices) > 1:
             lance = prices[1]
 
+    # ── Incremento ───────────────────────────────────────────────────────────
+    incremento = find_money([r'incremento', r'passo\s+m[íi]nimo'])
+
+    # ── Data do leilão ───────────────────────────────────────────────────────
     data_leilao = parse_date_br(text)
 
-    m_area = re.search(r'([\d,]+)\s*m[²2²]', text, re.IGNORECASE)
+    # ── Área ─────────────────────────────────────────────────────────────────
+    m_area = re.search(r'([\d.,]+)\s*m[²2²]', text, re.IGNORECASE)
     area   = m_area.group(0) if m_area else ''
 
-    m_cid  = re.search(r'([A-ZÀ-Ú][a-zà-ú]+(?:\s[A-ZÀ-Ú]?[a-zà-ú]+)*)\s*/\s*([A-Z]{2})\b', text)
+    # ── Cidade/UF ────────────────────────────────────────────────────────────
+    m_cid  = re.search(r'([A-ZÀ-Ú][a-zà-ú]+(?:\s[A-ZÀ-Ú]?[a-zà-ú]+){0,4})\s*/\s*([A-Z]{2})\b', text)
     cidade = m_cid.group(0) if m_cid else ''
 
+    # ── Documentos (PDFs) ────────────────────────────────────────────────────
     pdfs = []
     for a in soup.find_all('a', href=True):
         href = a['href']
         txt  = a.get_text(strip=True)
-        if '.pdf' in href.lower() or any(k in txt.lower() for k in ['edital', 'matr', 'laudo']):
-            full = fix_url(href)
+        is_doc = (
+            '.pdf' in href.lower() or
+            any(k in txt.lower()  for k in ['edital', 'matr', 'laudo', 'memorial']) or
+            any(k in href.lower() for k in ['edital', 'matr', 'laudo', 'memorial'])
+        )
+        if is_doc:
+            full = fix_url(href, base_scheme, origin)
             if full:
-                pdfs.append({'url': full, 'label': txt})
+                pdfs.append({'url': full, 'label': txt or href.split('/')[-1]})
 
     edital    = next((p['url'] for p in pdfs if 'edital' in p['label'].lower() + p['url'].lower()), '')
     matricula = next((p['url'] for p in pdfs if 'matr'   in p['label'].lower() + p['url'].lower()), '')
 
+    # ── Tipo de imóvel ───────────────────────────────────────────────────────
     tipo = ''
-    for t in ['Apartamento', 'Casa', 'Terreno', 'Sala Comercial', 'Galpão']:
+    for t in ['Apartamento', 'Casa', 'Terreno', 'Sala Comercial', 'Galpão',
+              'Loja', 'Sítio', 'Fazenda', 'Flat', 'Cobertura']:
         if re.search(t, text, re.IGNORECASE):
             tipo = t; break
 
+    # ── Modalidade ───────────────────────────────────────────────────────────
     modalidade = ''
-    if re.search(r'1[ºo][\s.]*pra[çc]a', text, re.IGNORECASE):
+    if re.search(r'1[ºo°][\s.]*pra[çc]a', text, re.IGNORECASE):
         modalidade = '1ª Praça'
-    elif re.search(r'2[ºo][\s.]*pra[çc]a', text, re.IGNORECASE):
+    elif re.search(r'2[ºo°][\s.]*pra[çc]a', text, re.IGNORECASE):
         modalidade = '2ª Praça'
+    elif re.search(r'3[ºo°][\s.]*pra[çc]a', text, re.IGNORECASE):
+        modalidade = '3ª Praça'
     elif re.search(r'extrajudicial', text, re.IGNORECASE):
         modalidade = 'Leilão Extrajudicial'
+    elif re.search(r'venda\s+direta', text, re.IGNORECASE):
+        modalidade = 'Venda Direta'
+
+    # ── Leiloeiro ────────────────────────────────────────────────────────────
+    leiloeiro = meta('og:site_name') or ''
+    if not leiloeiro:
+        m_leil = re.search(
+            r'leiloeiro[r:]?\s+([A-ZÀ-Ú][a-zà-ú]+(?:\s[A-ZÀ-Ú][a-zà-ú]+){1,4})',
+            text, re.IGNORECASE)
+        if m_leil:
+            leiloeiro = m_leil.group(1)
+
+    # ── Processo / judicial ──────────────────────────────────────────────────
+    m_proc = re.search(r'(\d{7}-\d{2}\.\d{4}\.\d\.\d{2}\.\d{4})', text)
+    processo = m_proc.group(1) if m_proc else ''
+
+    m_vara = re.search(r'(\d+[ªº°]?\s*(?:Vara|vara)[^,\n]{0,60})', text)
+    vara = clean(m_vara.group(1)) if m_vara else ''
+
+    m_comarca = re.search(r'Comarca\s+(?:de\s+)?([A-ZÀ-Ú][a-zà-ú]+(?:\s[A-ZÀ-Ú]?[a-zà-ú]+){0,3})', text)
+    comarca = m_comarca.group(1) if m_comarca else ''
 
     return {
-        'ok': True, 'titulo': titulo[:120], 'descricao': desc,
+        'ok': True, 'titulo': titulo[:150], 'descricao': desc,
         'foto': foto, 'images': [foto] if foto else [],
-        'avaliacao': avaliacao, 'lance': lance, 'incremento': '',
-        'data': data_leilao, 'leiloeiro': meta('og:site_name'),
+        'avaliacao': avaliacao, 'lance': lance, 'incremento': incremento,
+        'data': data_leilao, 'leiloeiro': leiloeiro,
         'area': area, 'cidade': cidade, 'tipo': tipo, 'modalidade': modalidade,
         'edital': edital, 'matricula': matricula,
-        'processo': '', 'leilao_num': '', 'autor': '', 'reu': '',
-        'vara': '', 'comarca': '', 'url': url,
+        'processo': processo, 'leilao_num': '', 'autor': '', 'reu': '',
+        'vara': vara, 'comarca': comarca, 'url': url,
     }
 
 
@@ -803,7 +876,7 @@ def parse():
 
 @app.route('/ping')
 def ping():
-    return jsonify({'ok': True, 'msg': 'Servidor ativo', 'version': '2.2'})
+    return jsonify({'ok': True, 'msg': 'Servidor ativo', 'version': '2.3'})
 
 @app.route('/debug')
 def debug():
