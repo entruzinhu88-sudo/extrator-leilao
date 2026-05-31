@@ -1,0 +1,111 @@
+=====================================================
+  GUIA DE PUBLICAÇÃO — Extrator de Leilão
+  Douglas Rosa · douglasrosaleiloes
+=====================================================
+
+VISÃO GERAL
+-----------
+O app tem duas partes:
+  1. SERVIDOR (Python) → vai para o Render.com (grátis)
+  2. PÁGINA (HTML)     → vai para o seu cPanel / domínio
+
+Tempo estimado: 20 minutos
+
+
+═══════════════════════════════════════════════════
+PARTE 1 — PUBLICAR O SERVIDOR NO RENDER.COM
+═══════════════════════════════════════════════════
+
+PASSO 1: Criar conta no GitHub
+  → Acesse: https://github.com
+  → Clique em "Sign up" e crie uma conta gratuita
+
+PASSO 2: Criar repositório no GitHub
+  → Clique em "New repository" (botão verde)
+  → Nome: extrator-leilao
+  → Deixe como "Public"
+  → Clique em "Create repository"
+
+PASSO 3: Fazer upload dos arquivos do servidor
+  → Dentro do repositório, clique em "uploading an existing file"
+  → Arraste os arquivos desta pasta:
+       • extrator_server.py
+       • requirements.txt
+       • render.yaml
+  → Clique em "Commit changes"
+
+PASSO 4: Criar conta no Render.com
+  → Acesse: https://render.com
+  → Clique em "Get Started for Free"
+  → Faça login COM SUA CONTA DO GITHUB (opção mais fácil)
+
+PASSO 5: Criar o serviço no Render
+  → No painel do Render, clique em "New +"
+  → Selecione "Web Service"
+  → Conecte o repositório "extrator-leilao"
+  → Configurações:
+       Name:           extrator-leilao
+       Runtime:        Python 3
+       Build Command:  pip install -r requirements.txt
+       Start Command:  gunicorn extrator_server:app
+  → Clique em "Create Web Service"
+  → Aguarde ~3 minutos para o deploy terminar
+
+PASSO 6: Copiar a URL do servidor
+  → Após o deploy, o Render mostra uma URL no topo:
+       Ex: https://extrator-leilao.onrender.com
+  → COPIE essa URL — você vai precisar no próximo passo
+
+
+═══════════════════════════════════════════════════
+PARTE 2 — PUBLICAR A PÁGINA NO SEU DOMÍNIO (cPanel)
+═══════════════════════════════════════════════════
+
+PASSO 7: Editar o arquivo HTML
+  → Abra o arquivo "trello-leilao.html" desta pasta
+     (pode usar o Bloco de Notas ou qualquer editor)
+  → Procure a linha (Ctrl+F):
+       const SERVER = '__RENDER_URL__'
+  → Substitua __RENDER_URL__ pela URL que você copiou:
+       const SERVER = 'https://extrator-leilao.onrender.com'
+  → Salve o arquivo
+
+PASSO 8: Fazer upload no cPanel
+  → Acesse seu cPanel → "Gerenciador de Arquivos"
+  → Navegue até a pasta "public_html"
+     (ou a pasta do domínio onde quer publicar)
+  → Clique em "Upload" e envie o arquivo "trello-leilao.html"
+  → Pode renomear para "leilao.html" ou deixar como está
+
+PASSO 9: Acessar o app
+  → Abra no navegador:
+       https://seudominio.com.br/trello-leilao.html
+  → O app deve funcionar normalmente!
+
+
+═══════════════════════════════════════════════════
+OBSERVAÇÕES IMPORTANTES
+═══════════════════════════════════════════════════
+
+PLANO GRATUITO DO RENDER:
+  • O servidor "dorme" após 15 min sem uso
+  • A primeira extração do dia pode demorar ~30 segundos
+  • Para evitar isso, assine o plano Starter (US$ 7/mês)
+    ou use o UptimeRobot para manter o servidor ativo:
+    → https://uptimerobot.com (grátis)
+    → Crie um monitor HTTP para a URL do Render + /ping
+    → Intervalo: a cada 5 minutos
+
+API KEY E TOKEN DO TRELLO:
+  • Cada usuário configura as próprias credenciais
+  • As credenciais ficam salvas no navegador (localStorage)
+  • Não são enviadas para o servidor — seguro!
+
+SEGURANÇA:
+  • O servidor só faz extração de sites públicos de leilão
+  • Não armazena nenhum dado
+  • Credenciais do Trello ficam apenas no navegador
+
+=====================================================
+  Dúvidas? douglasrosaleiloes
+=====================================================
