@@ -10,20 +10,66 @@ import requests
 from requests.packages.urllib3.exceptions import InsecureRequestWarning
 requests.packages.urllib3.disable_warnings(InsecureRequestWarning)
 from bs4 import BeautifulSoup
-import re, json
+import re, json, time, random
 
 app = Flask(__name__)
 CORS(app)
 
+# Headers completos de navegador real (Chrome 124 / Windows)
 HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
         "AppleWebKit/537.36 (KHTML, like Gecko) "
         "Chrome/124.0.0.0 Safari/537.36"
     ),
-    "Accept-Language": "pt-BR,pt;q=0.9",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept": (
+        "text/html,application/xhtml+xml,application/xml;"
+        "q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,"
+        "application/signed-exchange;v=b3;q=0.7"
+    ),
+    "Accept-Language":          "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7",
+    "Accept-Encoding":          "gzip, deflate",
+    "Connection":               "keep-alive",
+    "Upgrade-Insecure-Requests":"1",
+    "Sec-Fetch-Dest":           "document",
+    "Sec-Fetch-Mode":           "navigate",
+    "Sec-Fetch-Site":           "none",
+    "Sec-Fetch-User":           "?1",
+    "Cache-Control":            "max-age=0",
+    "sec-ch-ua":                '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
+    "sec-ch-ua-mobile":         "?0",
+    "sec-ch-ua-platform":       '"Windows"',
+    "DNT":                      "1",
 }
+
+def fetch_html(url, timeout=25):
+    """
+    Busca HTML simulando navegador Chrome real.
+    Usa sessão com cookies + Referer do Google.
+    """
+    session = requests.Session()
+
+    # Headers completos + Referer simulando vinda do Google
+    hdrs = dict(HEADERS)
+    hdrs['Referer'] = 'https://www.google.com.br/'
+
+    for tentativa in range(2):
+        try:
+            resp = session.get(
+                url, headers=hdrs, timeout=timeout,
+                verify=False, allow_redirects=True
+            )
+            resp.encoding = resp.apparent_encoding or 'utf-8'
+            if resp.status_code == 403:
+                raise Exception(f'Site bloqueou o acesso (403 Forbidden)')
+            if resp.status_code >= 400:
+                raise Exception(f'Site retornou erro {resp.status_code}')
+            return resp.text
+        except Exception as e:
+            if tentativa == 1:
+                raise
+            time.sleep(2)
+    raise Exception('Falha ao buscar página')
 
 # ─────────────────────────────────────────────────────────────────────────────
 # UTILITÁRIOS
@@ -671,9 +717,7 @@ def extract():
     domain = m.group(1) if m else ''
 
     try:
-        resp = requests.get(url, headers=HEADERS, timeout=25, allow_redirects=True, verify=False)
-        resp.encoding = resp.apparent_encoding or 'utf-8'
-        html = resp.text
+        html = fetch_html(url)
     except Exception as e:
         try:
             html = fetch_with_playwright(url)
@@ -701,7 +745,29 @@ def fetch_with_playwright(url):
 
 @app.route('/ping')
 def ping():
-    return jsonify({'ok': True, 'msg': 'Servidor ativo'})
+    return jsonify({'ok': True, 'msg': 'Servidor ativo', 'version': '2.1'})
+
+@app.route('/debug')
+def debug():
+    """Mostra o HTML bruto recebido (primeiros 3000 chars) — para diagnóstico."""
+    url = request.args.get('url', '').strip()
+    if not url:
+        return jsonify({'ok': False, 'error': 'Informe ?url=...'}), 400
+    try:
+        html = fetch_html(url, timeout=20)
+        soup = BeautifulSoup(html, 'html.parser')
+        m = re.search(r'https?://(?:www\.)?([^/]+)', url)
+        domain = m.group(1) if m else ''
+        extractor = EXTRACTORS.get(domain) or detect_platform(soup) or extract_generic
+        return jsonify({
+            'ok': True,
+            'domain': domain,
+            'extractor': extractor.__name__,
+            'status_len': len(html),
+            'html_preview': html[:3000],
+        })
+    except Exception as e:
+        return jsonify({'ok': False, 'error': str(e)})
 
 
 if __name__ == '__main__':
