@@ -1,4 +1,4 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="pt-BR">
 <head>
 <meta charset="utf-8">
@@ -1094,14 +1094,9 @@ async function extract() {
   const url = document.getElementById('urlInput').value.trim();
   if (!url) { shake(document.getElementById('urlInput')); return; }
   setLoading(true);
-  log('🔌 Verificando servidor de extração...');
-  const online = await serverOnline();
-  if (!online) {
-    log('⚠️ Servidor não encontrado. Abra o arquivo "INICIAR EXTRATOR.bat" primeiro para ligar o servidor, depois tente novamente.', true);
-    setLoading(false);
-    return;
-  }
-  log('🔍 Servidor ativo — extraindo dados do leilão...');
+
+  // ── 1. Tenta extração direta pelo servidor ──────────────────
+  log('🔍 Extraindo dados do leilão...');
   try {
     const res  = await fetch(`${SERVER}/extract?url=${encodeURIComponent(url)}`,
                              { signal: AbortSignal.timeout(35000) });
@@ -1109,16 +1104,52 @@ async function extract() {
     if (!data.ok) throw new Error(data.error || 'Erro desconhecido');
     fillForm(data);
     const found = [data.titulo, data.avaliacao, data.lance, data.data].filter(Boolean).length;
-    log(`✅ Extração concluída — ${found} campo(s) preenchido(s) automaticamente. Revise e confirme.`);
-  } catch(e) {
-    log(`⚠️ ${e.message} — preencha os dados manualmente abaixo.`, true);
-    fillForm({ titulo:'', descricao:'', foto:'', avaliacao:'', lance:'',
-               data:'', leiloeiro:'', area:'', cidade:'', tipo:'', modalidade:'',
-               edital:'', matricula:'', url });
+    log(`✅ ${found} campo(s) preenchido(s). Revise e confirme.`);
+    setLoading(false);
     showPreview();
+    return;
+  } catch(e) {
+    log(`⚠️ Extração direta falhou (${e.message}) — tentando via proxy...`);
   }
+
+  // ── 2. Tenta via proxy PHP (fetch.php no cPanel) ────────────
+  try {
+    await extractViaProxy(url);
+    setLoading(false);
+    showPreview();
+    return;
+  } catch(e) {
+    log(`⚠️ Proxy também falhou (${e.message}) — preencha manualmente.`, true);
+  }
+
+  // ── 3. Fallback: formulário em branco para preenchimento manual
+  fillForm({ titulo:'', descricao:'', foto:'', avaliacao:'', lance:'',
+             data:'', leiloeiro:'', area:'', cidade:'', tipo:'', modalidade:'',
+             edital:'', matricula:'', url });
   setLoading(false);
   showPreview();
+}
+
+async function extractViaProxy(url) {
+  // Busca o HTML via fetch.php (IP do cPanel — não está na lista negra)
+  const proxyUrl = `fetch.php?url=${encodeURIComponent(url)}`;
+  const proxyRes = await fetch(proxyUrl, { signal: AbortSignal.timeout(28000) });
+  if (!proxyRes.ok) throw new Error(`Proxy retornou ${proxyRes.status}`);
+  const html = await proxyRes.text();
+  if (html.length < 500) throw new Error('Proxy retornou conteúdo insuficiente');
+
+  // Envia o HTML já baixado para o servidor extrair (sem precisar re-buscar)
+  const parseRes = await fetch(`${SERVER}/parse?url=${encodeURIComponent(url)}`, {
+    method:  'POST',
+    headers: { 'Content-Type': 'text/html; charset=utf-8' },
+    body:    html,
+    signal:  AbortSignal.timeout(22000),
+  });
+  const data = await parseRes.json();
+  if (!data.ok) throw new Error(data.error || 'Falha na extração via proxy');
+  fillForm(data);
+  const found = [data.titulo, data.avaliacao, data.lance, data.data].filter(Boolean).length;
+  log(`✅ ${found} campo(s) preenchido(s) via proxy. Revise e confirme.`);
 }
 
 function fillForm(d) {

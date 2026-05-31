@@ -779,6 +779,28 @@ def fetch_with_playwright(url):
     return html
 
 
+@app.route('/parse', methods=['POST'])
+def parse():
+    """
+    Recebe HTML bruto via POST e extrai os dados do leilão.
+    Usado como fallback quando o fetch direto é bloqueado:
+    o browser busca o HTML via proxy PHP do cPanel e envia aqui.
+    """
+    url  = request.args.get('url', '').strip()
+    html = request.get_data(as_text=True)
+
+    if not html or len(html) < 200:
+        return jsonify({'ok': False, 'error': 'HTML não enviado ou muito pequeno'})
+
+    m      = re.search(r'https?://(?:www\.)?([^/]+)', url)
+    domain = m.group(1) if m else ''
+
+    soup      = BeautifulSoup(html, 'html.parser')
+    extractor = EXTRACTORS.get(domain) or detect_platform(soup) or extract_generic
+    result    = extractor(soup, url)
+    return jsonify(result)
+
+
 @app.route('/ping')
 def ping():
     return jsonify({'ok': True, 'msg': 'Servidor ativo', 'version': '2.1'})
